@@ -1,0 +1,98 @@
+# Global Settings
+project_name: "TPD Literature Review"
+output_dir: "reports"
+data_dir: "data"
+log_dir: "logs"
+
+# LLM Settings
+llm:
+  model: "llama3.2"
+  classification_timeout: 600
+  summarization_timeout: 600
+  max_retries: 1
+
+# PubMed Search Settings
+pubmed:
+  days_back: 7
+  max_results: 500
+  max_articles_to_process: NULL
+  search_terms: |
+    (((((("ubiquitin"[Title/Abstract]) OR ("E3 ligase"[Title/Abstract])) OR ("molecular glue"[Title/Abstract])) OR ("protein turnover")) OR ("Activity-based protein profiling")) OR ("activity based protein profiling")) OR ("Proximity labeling"[Title/Abstract])
+
+# Classification Settings
+classification:
+  categories:
+    - "MOLECULAR_GLUE"
+    - "PROTAC"
+    - "OTHER"
+  
+  prompt_template: |
+    Classify this research paper into ONE category:
+    
+    Categories:
+    - MOLECULAR_GLUE: Papers about molecular glue degraders
+    - PROTAC: Papers about PROTACs (proteolysis targeting chimeras)
+    - OTHER: All other papers
+    
+    Title: {title}
+    
+    Abstract: {abstract}
+    
+    Respond with ONLY the category name. No explanation.
+
+# Summarization Settings
+summarization:
+  prompt_template: |
+    You are writing a narrative summary for a weekly literature review.
+    
+    Read this paper carefully and write a flowing 3-4 sentence summary that covers:
+    1. The research aim/question
+    2. The main methodology or approach used
+    3. The key findings or conclusions
+    
+    Write in a continuous narrative style suitable for an essay, not bullet points.
+    
+    Title: {title}
+    Abstract: {abstract}
+    
+    Summary:
+
+# Filtering Settings
+filters:
+  exclude_keywords: []
+  include_only_keywords: []
+
+# Report Settings
+report:
+  type: "essay_summary"
+  max_pages: 3
+  font_size: 11
+  include_citations: true
+  group_by_category: true
+
+# Email Settings
+email:
+  enabled: true
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  from_email: "your-email@gmail.com"
+  to_email: "recipient@example.com"
+  subject_template: "TPD Literature Review - {date}"
+  body_template: |
+    Attached is your weekly TPD literature review for {date_range}.
+    
+    Summary:
+    - Total papers: {total_papers}
+    - Molecular Glue: {molecular_glue_count}
+    - PROTAC: {protac_count}
+    - Other: {other_count}
+    
+    Best regards,
+    TPD Literature Review System
+
+# Scheduling Settings
+schedule:
+  enabled: true
+  day: "Sunday"
+  time: "09:00"
+  timezone: "UTC"

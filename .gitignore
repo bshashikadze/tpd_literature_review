@@ -1,0 +1,22 @@
+# R specific
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj
+
+# Sensitive data
+.Renviron
+
+# Generated files
+*.log
+data/*.rds
+reports/*.pdf
+
+# Keep directory structure
+!data/.gitkeep
+!reports/.gitkeep
+!logs/.gitkeep
+
+# OS specific
+.DS_Store
+Thumbs.db
