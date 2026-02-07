@@ -127,142 +127,153 @@ apply_filters <- function(papers_df, config) {
   return(papers_df)
 }
 
-#' Fetch papers in batches to respect API limits
+#' Fetch papers in batches with details
+#' 
 #' @param pmids Vector of PubMed IDs
-#' @param batch_size Number of papers per batch (default 100)
-#' @return data.frame with paper details
+#' @param batch_size Number of papers per batch
+#' @return Data frame with paper details
 fetch_paper_batch <- function(pmids, batch_size = 100) {
-  if (length(pmids) == 0) {
-    return(NULL)
-  }
+  library(rentrez)
+  library(XML)
   
-  # Split PMIDs into batches
-  n_batches <- ceiling(length(pmids) / batch_size)
-  batches <- split(pmids, ceiling(seq_along(pmids) / batch_size))
+  total <- length(pmids)
+  papers_list <- list()
   
-  message(sprintf("Fetching %d papers in %d batches...", length(pmids), n_batches))
+  # Process in batches
+  num_batches <- ceiling(total / batch_size)
   
-  all_papers <- list()
-  
-  for (i in seq_along(batches)) {
-    batch_pmids <- batches[[i]]
+  for (batch_num in 1:num_batches) {
+    start_idx <- (batch_num - 1) * batch_size + 1
+    end_idx <- min(batch_num * batch_size, total)
+    batch_pmids <- pmids[start_idx:end_idx]
+    
+    cat(sprintf("Fetching batch %d/%d (PMIDs %d-%d)...\n", 
+                batch_num, num_batches, start_idx, end_idx))
     
     tryCatch({
       # Fetch summaries for batch
       summaries <- entrez_summary(db = "pubmed", id = batch_pmids)
       
-      # Fetch full records (for abstracts)
-      fetch_result <- entrez_fetch(
-        db = "pubmed",
-        id = batch_pmids,
-        rettype = "xml"
-      )
+      # Fetch XML for batch (to get abstracts and DOIs)
+      xml_data <- entrez_fetch(db = "pubmed", 
+                               id = batch_pmids, 
+                               rettype = "xml", 
+                               parsed = TRUE)
       
-      # Parse XML
-      xml_data <- read_xml(fetch_result)
-      
-      # Extract data for each paper
-      batch_papers <- map_dfr(batch_pmids, function(pmid) {
-        extract_paper_data(pmid, summaries, xml_data)
-      })
-      
-      all_papers[[i]] <- batch_papers
-      
-      # Progress message
-      if (i %% 5 == 0 || i == n_batches) {
-        message(sprintf("  Processed %d/%d batches (%d papers)", 
-                        i, n_batches, i * batch_size))
+      # Extract data for each paper in batch
+      for (i in seq_along(batch_pmids)) {
+        pmid <- batch_pmids[i]
+        
+        # Get individual summary
+        if (length(batch_pmids) == 1) {
+          individual_summary <- summaries
+        } else {
+          individual_summary <- summaries[[i]]
+        }
+        
+        # Extract paper data (pass the full XML, extract_paper_data will parse it)
+        paper_data <- extract_paper_data(pmid, individual_summary, xml_data)
+        papers_list[[length(papers_list) + 1]] <- paper_data
       }
       
-      # Rate limiting - wait 0.5 seconds between batches
-      if (i < n_batches) {
+      # Rate limiting - wait between batches
+      if (batch_num < num_batches) {
         Sys.sleep(0.5)
       }
       
     }, error = function(e) {
-      message(sprintf("  ERROR in batch %d: %s", i, e$message))
+      warning(sprintf("Error fetching batch %d: %s", batch_num, e$message))
+      # Add placeholder data for failed batch
+      for (pmid in batch_pmids) {
+        papers_list[[length(papers_list) + 1]] <- list(
+          pmid = pmid,
+          title = NA_character_,
+          authors = NA_character_,
+          journal = NA_character_,
+          pub_date = NA_character_,
+          doi = NA_character_,
+          abstract = NA_character_
+        )
+      }
     })
   }
   
-  # Combine all batches
-  if (length(all_papers) > 0) {
-    papers_df <- bind_rows(all_papers)
-    return(papers_df)
-  } else {
-    return(NULL)
-  }
+  # Convert to data frame
+  papers_df <- do.call(rbind.data.frame, papers_list)
+  papers_df[] <- lapply(papers_df, as.character)
+  
+  return(papers_df)
 }
 
-#' Extract paper data from PubMed XML and summary
+#' Extract paper data from PubMed summary and XML
+#' 
 #' @param pmid PubMed ID
-#' @param summaries entrez_summary object
-#' @param xml_data XML document
-#' @return data.frame row with paper details
+#' @param summaries entrez_summary object for this paper
+#' @param xml_data Parsed XML document (may contain multiple papers)
+#' @return Named list with paper data
 extract_paper_data <- function(pmid, summaries, xml_data) {
+  library(XML)
+  
   tryCatch({
-    # Get summary data
-    summary <- summaries[[pmid]]
-    
     # Extract from summary
-    title <- ifelse(is.null(summary$title), NA, summary$title)
-    journal <- ifelse(is.null(summary$source), NA, summary$source)
-    pub_date <- ifelse(is.null(summary$pubdate), NA, summary$pubdate)
+    title <- summaries$title
     
     # Extract authors
-    authors <- NA
-    if (!is.null(summary$authors) && length(summary$authors) > 0) {
-      author_names <- sapply(summary$authors, function(a) {
-        if (!is.null(a$name)) a$name else NA
-      })
-      author_names <- author_names[!is.na(author_names)]
-      if (length(author_names) > 0) {
-        authors <- paste(author_names, collapse = ", ")
+    if (!is.null(summaries$authors) && length(summaries$authors) > 0) {
+      authors <- paste(summaries$authors$name, collapse = ", ")
+    } else {
+      authors <- NA_character_
+    }
+    
+    journal <- summaries$source
+    pub_date <- summaries$pubdate
+    
+    # Extract DOI and abstract from XML for this specific PMID
+    doi <- NA_character_
+    abstract <- NA_character_
+    
+    if (!is.null(xml_data)) {
+      # Find the PubmedArticle node for this specific PMID
+      pmid_xpath <- sprintf("//PubmedArticle[MedlineCitation/PMID='%s']", pmid)
+      article_node <- getNodeSet(xml_data, pmid_xpath)
+      
+      if (length(article_node) > 0) {
+        article_node <- article_node[[1]]
+        
+        # Extract DOI
+        doi_nodes <- xpathSApply(article_node, ".//ArticleId[@IdType='doi']", xmlValue)
+        if (length(doi_nodes) > 0) {
+          doi <- doi_nodes[1]
+        }
+        
+        # Extract abstract
+        abstract_nodes <- xpathSApply(article_node, ".//AbstractText", xmlValue)
+        if (length(abstract_nodes) > 0) {
+          abstract <- paste(abstract_nodes, collapse = " ")
+        }
       }
     }
     
-    # Extract DOI from XML
-    doi <- NA
-    article_node <- xml_find_first(xml_data, sprintf("//PubmedArticle[MedlineCitation/PMID='%s']", pmid))
-    if (!is.na(article_node) && !is.null(article_node)) {
-      doi_node <- xml_find_first(article_node, ".//ArticleId[@IdType='doi']")
-      if (!is.na(doi_node) && !is.null(doi_node)) {
-        doi <- xml_text(doi_node)
-      }
-    }
-    
-    # Extract abstract from XML
-    abstract <- NA
-    if (!is.na(article_node) && !is.null(article_node)) {
-      abstract_nodes <- xml_find_all(article_node, ".//AbstractText")
-      if (length(abstract_nodes) > 0) {
-        abstract_parts <- xml_text(abstract_nodes)
-        abstract <- paste(abstract_parts, collapse = " ")
-      }
-    }
-    
-    # Create data frame row
-    data.frame(
+    return(list(
       pmid = pmid,
       title = title,
       authors = authors,
       journal = journal,
       pub_date = pub_date,
-      doi = ifelse(is.na(doi), "", doi),
-      abstract = ifelse(is.na(abstract), "", abstract),
-      stringsAsFactors = FALSE
-    )
+      doi = doi,
+      abstract = abstract
+    ))
     
   }, error = function(e) {
-    # Return row with NA values if extraction fails
-    data.frame(
+    warning(sprintf("Error extracting data for PMID %s: %s", pmid, e$message))
+    return(list(
       pmid = pmid,
-      title = NA,
-      authors = NA,
-      journal = NA,
-      pub_date = NA,
-      doi = NA,
-      abstract = NA,
-      stringsAsFactors = FALSE
-    )
+      title = NA_character_,
+      authors = NA_character_,
+      journal = NA_character_,
+      pub_date = NA_character_,
+      doi = NA_character_,
+      abstract = NA_character_
+    ))
   })
 }
